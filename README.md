@@ -50,9 +50,9 @@ This adapter supports discovering the CloudWatch Log Group from environment vari
 
 This will cause the adapter to look for the "LOGSPOUT\_CLOUDWATCHLOGS\_STDOUT\_LOG\_GROUP" and "LOGSPOUT\_CLOUDWATCHLOGS\_STDERR\_LOG\_GROUP" environment variables on the container in order to determine where a container's logs should be sent.
 
-#### `container-log-groups=container-name1:LogGroupName1,container-name2:LogGroupName2`
+#### `container-log-groups={"container-name1":"LogGroupName1","container-name2":"LogGroupName2"}`
 
-The maps specific container names to log groups. Each key (container name) and value (log group name) is separated by a colon (":"), and each pair is separated by a comma (","). For example, if you have containers called "ecs-agent" and "monitoring-agent", logs from these containers can be mapped to log groups with:
+JSON document that maps specific container names to log groups. For examle, if you have containers called "ecs-agent" and "monitoring-agent", logs from these containers can be mapped to log groups with:
 
     'cloudwatchlogs://eu-west-1?container-log-groups=ecs-agent:ECSAgentLogGroup,monitoring-agent:MonitoringAgentLogGroup
 
