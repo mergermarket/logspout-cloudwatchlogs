@@ -4,6 +4,7 @@ import (
     "github.com/gliderlabs/logspout/router"
     "github.com/awslabs/aws-sdk-go/aws"
     "github.com/awslabs/aws-sdk-go/service/cloudwatchlogs"
+	"github.com/fsouza/go-dockerclient"
     "fmt"
     "strings"
     "log"
@@ -53,13 +54,13 @@ func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
 
 func (self *CloudWatchLogsAdapter) Stream(logstream chan *router.Message) {
     for m := range logstream {
-        id := strings.Join([]string{ m.Container.ID, m.Source }, "-")
+		name := strings.Join([]string{ self.streamPrefix, m.Container.Name[1:], m.Source }, "-")
 
-        var stream = self.containerStreams[id]
+        var stream = self.containerStreams[name]
 
         if stream == nil {
-            stream = newContainerStream(self, m)
-            self.containerStreams[id] = stream
+            stream = self.createContainerStream(name, m.Container, m.Source)
+            self.containerStreams[name] = stream
         }
 
         if stream.channel != nil {
@@ -68,45 +69,46 @@ func (self *CloudWatchLogsAdapter) Stream(logstream chan *router.Message) {
     }
 }
 
-type containerStream struct {
-    logGroupName string
-    source string
-    channel chan *router.Message
-    adapter *CloudWatchLogsAdapter
-    seenLogStream bool
-    nextSequenceToken *string
-    streamName string
-}
-
-func getLogGroupName (env []string, key string) string {
-    prefix := strings.Join([]string{ key, "=" }, "")
-    for i := 0; i < len(env); i++ {
-        if strings.HasPrefix(env[i], prefix) {
-           return env[i][len(prefix):]
-        }
-    }
-    return ""
-}
-
-func newContainerStream (adapter *CloudWatchLogsAdapter, m *router.Message) *containerStream {
-    envName := strings.Join([]string{ "DOCKER_LOG_GROUP_", strings.ToUpper(m.Source) }, "")
-    logGroupName := getLogGroupName(m.Container.Config.Env, envName)
+func (self *CloudWatchLogsAdapter) createContainerStream (name string, container *docker.Container, source string) *containerStream {
+    logGroupName := self.getLogGroupName(container, source)
     var channel chan *router.Message
     if logGroupName != "" {
         channel = make(chan *router.Message)
     }
-    self := containerStream{
+    stream := containerStream{
         logGroupName: logGroupName,
         channel: channel,
-        source: m.Source,
-        adapter: adapter,
+        adapter: self,
         seenLogStream: false,
-        streamName: strings.Join([]string{ m.Container.Name[1:], m.Source }, "-"),
+        streamName: name,
     }
-    if self.channel != nil {
-        go self.handleMessages()
+    if stream.channel != nil {
+        go stream.handleMessages()
     }
-    return &self
+    return &stream
+}
+
+func (self *CloudWatchLogsAdapter) getLogGroupName (container *docker.Container, source string) string {
+	if logGroup, explicitLogGroup := self.containerLogGroups[container.Name[1:]]; explicitLogGroup {
+		return logGroup
+	} else if self.logGroupEnvPrefix != "" {
+		prefix := strings.Join([]string{ self.logGroupEnvPrefix, "_", strings.ToUpper(source), "=" }, "")
+		for i := 0; i < len(container.Config.Env); i++ {
+			if strings.HasPrefix(container.Config.Env[i], prefix) {
+			   return container.Config.Env[i][len(prefix):]
+			}
+		}
+	}
+	return self.defaultLogGroup
+}
+
+type containerStream struct {
+    logGroupName string
+    streamName string
+    channel chan *router.Message
+    adapter *CloudWatchLogsAdapter
+    seenLogStream bool
+    nextSequenceToken *string
 }
 
 func (self *containerStream) getNextSequenceToken (m *router.Message) (*string, error) {
