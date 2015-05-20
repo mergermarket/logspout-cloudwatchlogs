@@ -4,12 +4,12 @@ import (
     "github.com/gliderlabs/logspout/router"
     "github.com/awslabs/aws-sdk-go/aws"
     "github.com/awslabs/aws-sdk-go/service/cloudwatchlogs"
-	"github.com/fsouza/go-dockerclient"
+    "github.com/fsouza/go-dockerclient"
     "fmt"
     "strings"
     "log"
     "errors"
-	"encoding/json"
+    "encoding/json"
 )
 
 func init() {
@@ -30,31 +30,31 @@ func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
     cwl := cloudwatchlogs.New(&aws.Config{
         Region: route.Address,
     })
-	for k := range route.Options {
-		if k != "stream-prefix" && k != "default-log-group" && k != "log-group-env-prefix" && k != "container-log-groups" {
-			return nil, errors.New(fmt.Sprintf("unknown option %s", k))
-		}
-	}
-	var containerLogGroups map[string]string
-	if val, ok := route.Options["container-log-groups"]; ok {
-		if err := json.Unmarshal([]byte(val), &containerLogGroups); err != nil {
-			return nil, errors.New(fmt.Sprintf("error parsing container-log-groups %s", err))
-		}
-	}
+    for k := range route.Options {
+        if k != "stream-prefix" && k != "default-log-group" && k != "log-group-env-prefix" && k != "container-log-groups" {
+            return nil, errors.New(fmt.Sprintf("unknown option %s", k))
+        }
+    }
+    var containerLogGroups map[string]string
+    if val, ok := route.Options["container-log-groups"]; ok {
+        if err := json.Unmarshal([]byte(val), &containerLogGroups); err != nil {
+            return nil, errors.New(fmt.Sprintf("error parsing container-log-groups %s", err))
+        }
+    }
     return &CloudWatchLogsAdapter{
         cwl: cwl,
         route: route,
-		streamPrefix: route.Options["stream-prefix"],
-		defaultLogGroup: route.Options["default-log-group"],
-		logGroupEnvPrefix: route.Options["log-group-env-prefix"],
-		containerLogGroups: containerLogGroups,
+        streamPrefix: route.Options["stream-prefix"],
+        defaultLogGroup: route.Options["default-log-group"],
+        logGroupEnvPrefix: route.Options["log-group-env-prefix"],
+        containerLogGroups: containerLogGroups,
         containerStreams: make(map[string]*containerStream),
     }, nil
 }
 
 func (self *CloudWatchLogsAdapter) Stream(logstream chan *router.Message) {
     for m := range logstream {
-		name := strings.Join([]string{ self.streamPrefix, m.Container.Name[1:], m.Source }, "-")
+        name := strings.Join([]string{ self.streamPrefix, m.Container.Name[1:], m.Source }, "-")
 
         var stream = self.containerStreams[name]
 
@@ -89,17 +89,17 @@ func (self *CloudWatchLogsAdapter) createContainerStream (name string, container
 }
 
 func (self *CloudWatchLogsAdapter) getLogGroupName (container *docker.Container, source string) string {
-	if logGroup, explicitLogGroup := self.containerLogGroups[container.Name[1:]]; explicitLogGroup {
-		return logGroup
-	} else if self.logGroupEnvPrefix != "" {
-		prefix := strings.Join([]string{ self.logGroupEnvPrefix, "_", strings.ToUpper(source), "=" }, "")
-		for i := 0; i < len(container.Config.Env); i++ {
-			if strings.HasPrefix(container.Config.Env[i], prefix) {
-			   return container.Config.Env[i][len(prefix):]
-			}
-		}
-	}
-	return self.defaultLogGroup
+    if logGroup, explicitLogGroup := self.containerLogGroups[container.Name[1:]]; explicitLogGroup {
+        return logGroup
+    } else if self.logGroupEnvPrefix != "" {
+        prefix := strings.Join([]string{ self.logGroupEnvPrefix, "_", strings.ToUpper(source), "=" }, "")
+        for i := 0; i < len(container.Config.Env); i++ {
+            if strings.HasPrefix(container.Config.Env[i], prefix) {
+               return container.Config.Env[i][len(prefix):]
+            }
+        }
+    }
+    return self.defaultLogGroup
 }
 
 type containerStream struct {
