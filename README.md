@@ -56,3 +56,19 @@ JSON document that maps specific container names to log groups. For examle, if y
 
     'cloudwatchlogs://eu-west-1?container-log-groups={"ecs-agent":"ECSAgentLogGroup","monitoring-agent":"MonitoringAgentLogGroup"}
 
+# Developing
+
+I haven't found a particularly good way to test logspout adapters during development. In order to shorten the cycle time of making a change and testing it, you can do the following:
+
+    # start the development container
+    ./dev.sh
+    
+    # initialise the environment
+    /logspout-cloudwatchlogs/init.sh
+    
+    # build and run logspout with the adapter
+    /logspout-cloudwatchlogs/run.sh cloudwatchlogs://eu-west-1
+
+Since the first two steps take quite a while, this allows you to make code changes and iterate more rapidly (just running the third command). Suggestions on a better way to do this welcome (particularly where we don't have to duplicate the build steps, which are contained in logspout proper).
+
+
