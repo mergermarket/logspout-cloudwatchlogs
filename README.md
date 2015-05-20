@@ -36,7 +36,7 @@ For example, if you provide the `stream-prefix` "i-d34db33f" then a container ca
 
 #### `default-log-group=LogGroupName`
 
-For containers not matched by one of other mechanisms described here, logs will be sent to this log group. The stream name will be taken from the container name, unless the `default-stream-name` option is set (see note below about making sure stream names are unique across your cluster).
+For containers not matched by one of other mechanisms described here, logs will be sent to this log group.
 
 #### `log-group-env-prefix=ENV_PREFIX`
 
@@ -51,6 +51,4 @@ This will cause the adapter to look for the "LOGSPOUT\_CLOUDWATCHLOGS\_STDOUT\_L
 The maps specific container names to log groups. Each key (container name) and value (log group name) is separated by a colon (":"), and each pair is separated by a comma (","). For example, if you have containers called "ecs-agent" and "monitoring-agent", logs from these containers can be mapped to log groups with:
 
     'cloudwatchlogs://eu-west-1?container-log-groups=ecs-agent:ECSAgentLogGroup,monitoring-agent:MonitoringAgentLogGroup
-
-# Keeping streams unique
 
