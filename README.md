@@ -54,5 +54,5 @@ This will cause the adapter to look for the "LOGSPOUT\_CLOUDWATCHLOGS\_STDOUT\_L
 
 JSON document that maps specific container names to log groups. For examle, if you have containers called "ecs-agent" and "monitoring-agent", logs from these containers can be mapped to log groups with:
 
-    'cloudwatchlogs://eu-west-1?container-log-groups=ecs-agent:ECSAgentLogGroup,monitoring-agent:MonitoringAgentLogGroup
+    'cloudwatchlogs://eu-west-1?container-log-groups={"ecs-agent":"ECSAgentLogGroup","monitoring-agent":"MonitoringAgentLogGroup"}
 
