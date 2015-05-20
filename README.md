@@ -36,25 +36,33 @@ For example, if you provide the `stream-prefix` "i-d34db33f" then a container ca
 
 ### Log group selection
 
-*At least on of `default-log-group`, `log-group-env-prefix` or `container-log-groups` is required in order for any logs to be sent to CloudWatchLogs.*
+* At least on of `default-log-group`, `log-group-from-env` or `container-log-groups` is required in order for any logs to be sent to CloudWatchLogs.*
 
 #### `default-log-group=LogGroupName`
 
 For containers not matched by one of other mechanisms described here, logs will be sent to this log group.
 
-#### `log-group-env-prefix=ENV_PREFIX`
+#### `log-group-from-env=on`
 
-This adapter supports discovering the CloudWatch Log Group from environment variables within the container. To enable this, set this variable - for example:
+This adapter supports discovering the CloudWatchLogs Log Group from an environment variable or environment variables within the container. To enable this, supply this parameter:
 
-    'cloudwatchlogs://eu-west-1?log-group-env-prefix=LOGSPOUT_CLOUDWATCHLOGS'
+    'cloudwatchlogs://eu-west-1?log-group-from-env=on'
 
-This will cause the adapter to look for the "LOGSPOUT\_CLOUDWATCHLOGS\_STDOUT\_LOG\_GROUP" and "LOGSPOUT\_CLOUDWATCHLOGS\_STDERR\_LOG\_GROUP" environment variables on the container in order to determine where a container's logs should be sent.
+This will cause the adapter to look for the following environment variable(s):
 
-#### `container-log-groups={"container-name1":"LogGroupName1","container-name2":"LogGroupName2"}`
+* `LOGSPOUT_CLOUDWATCHLOGS` - logs sent to both STDOUT AND STDERR will be forwarded to the log group identified by the value of this environment variable.
+* `LOGSPOUT_CLOUDWATCHLOGS_STDOUT` - logs sent to STDOUT will be forwarded to the log group identified by the value fo this environment variable.
+* `LOGSPOUT_CLOUDWATCHLOGS_STDERR` - logs sent to STDERR will be forwarded to the log group identified by the value fo this environment variable.
+
+When enabled, it is a error for a container to specify both `LOGSPOUT_CLOUDWATCHLOGS` and either `LOGSPOUT_CLOUDWATCHLOGS_STDOUT` or `LOGSPOUT_CLOUDWATCHLOGS_STDERR`. Where this is the case, the error will be logged to the logging container's own STDERR and the container's logs will be ignored.
+
+#### `container-log-groups={"container-name1":{"both":"LogGroupName1"},"container-name2":{"stdout":"LogGroupName2-stdout","stderr":"LogGroupName2-stderr"}}`
 
 JSON document that maps specific container names to log groups. For examle, if you have containers called "ecs-agent" and "monitoring-agent", logs from these containers can be mapped to log groups with:
 
-    'cloudwatchlogs://eu-west-1?container-log-groups={"ecs-agent":"ECSAgentLogGroup","monitoring-agent":"MonitoringAgentLogGroup"}
+    'cloudwatchlogs://eu-west-1?container-log-groups={"ecs-agent":{"both":"ECSAgentLogGroup"},"monitoring-agent":{"both":"MonitoringAgentLogGroup"}}'
+
+The STDOUT and STDERR stream from each container can be mapped to different log groups (by including "stdout" and/or "stderr"), or they can both be routed to the same log group (by including "both"). It is an error to include "both" and either "stdout" or "stderr". Doing so will prevent the logging container from starting.
 
 # Developing
 
