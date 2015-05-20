@@ -10,7 +10,7 @@ Logspout handles taking a "route" that corresponds to this adapter and handles p
 
 For example, the following sends all container logs to a "all-the-logs" log group in the eu-west-1 region (maybe not the best idea):
 
-    'cloudwatchlogs://eu-west-1?default-log-group=other-logs&default-stream-prefix=my.hostname-'
+    'cloudwatchlogs://eu-west-1?stream-prefix=i-d34db33f&default-log-group=other-logs'
 
 ## Scheme
 
@@ -18,13 +18,13 @@ The URL scheme should be set to "cloudwatchlogs" in order for the adapter to han
 
 ## Options
 
+### `stream-prefix` (required)
+
+This will be combined with the container name to ensure that stream names are unique - i.e. make sure this value is unique to your container host (see "Keeping Streams Unique" below).
+
 ### `default-log-group`
 
 For containers not matched by one of other mechanisms described here, logs will be sent to this log group. The stream name will be taken from the container name, unless the `default-stream-name` option is set (see note below about making sure stream names are unique across your cluster).
-
-### `stream-prefix`
-
-This will be combined with the container name to ensure that stream names are unique - i.e. make sure this value is unique to your container host (see "Keeping Streams Unique" below).
 
 ### `log-group-env-prefix`
 
@@ -40,7 +40,9 @@ The maps specific container names to log groups. Each key (container name) and v
 
     'cloudwatchlogs://eu-west-1?container-log-groups=ecs-agent:ECSAgentLogGroup,monitoring-agent:MonitoringAgentLogGroup
 
-# Keeping Streams Unique
+*At least on of `default-log-group`, `log-group-env-prefix` or `container-log-groups` is required in order for any logs to be sent to CloudWatchLogs.*
+
+# Keeping streams unique
 
 CloudWatch Streams (within a Log Group) are designed to accept a steam of logs from a single source. To enforce this calls to put logs return a sequence number that must be provided with a subsequent call to put logs. A missing or incorrect sequence number results in an error. This error does contain the correct sequence number so it is possible to recover from this error, but it is a bad idea to abuse this to effect interleaving logs from multiple sources: doing so would result in a race condition between multiple log sources competing to send log events, each causing a denial of service in the other(s).
 
