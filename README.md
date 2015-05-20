@@ -16,6 +16,10 @@ For example, the following sends all container logs to a "all-the-logs" log grou
 
 The URL scheme should be set to "cloudwatchlogs" in order for the adapter to handle log messages.
 
+## Address
+
+The URL address is used to set the AWS region to use when connecting to CloudWatchLogs - e.g. "eu-west-1" or "us-east-1".
+
 ## Options
 
 ### Global options
