@@ -79,4 +79,13 @@ I haven't found a particularly good way to test logspout adapters during develop
 
 Since the first two steps take quite a while, this allows you to make code changes and iterate more rapidly (just running the third command). Suggestions on a better way to do this welcome (particularly where we don't have to duplicate the build steps, which are contained in logspout proper).
 
+## Future improvements
+
+The following are areas that need to be improved (i.e. a to do list):
+
+* Handle rate limiting - back off and retry.
+* Handle batching of messages, with configurable maximum wait time (default 5 seconds) and batch size (default 100).
+* Have a configurable per stream maximum buffer before messages are dropped on the floor, in order to allow bounds to be placed on memory size. Log messages being dropped.
+* Output aggregate statistics about log delivery to STDOUT.
+
 
