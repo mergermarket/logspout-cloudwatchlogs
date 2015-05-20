@@ -60,9 +60,11 @@ When enabled, it is a error for a container to specify both `LOGSPOUT_CLOUDWATCH
 
 JSON document that maps specific container names to log groups. For examle, if you have containers called "ecs-agent" and "monitoring-agent", logs from these containers can be mapped to log groups with:
 
-    'cloudwatchlogs://eu-west-1?container-log-groups={"ecs-agent":{"both":"ECSAgentLogGroup"},"monitoring-agent":{"both":"MonitoringAgentLogGroup"}}'
+    'cloudwatchlogs://eu-west-1?container-log-groups={"ecs-agent":{"both":"ECSAgentLogGroup"}%2C"monitoring-agent":{"both":"MonitoringAgentLogGroup"}}'
 
 The STDOUT and STDERR stream from each container can be mapped to different log groups (by including "stdout" and/or "stderr"), or they can both be routed to the same log group (by including "both"). It is an error to include "both" and either "stdout" or "stderr". Doing so will prevent the logging container from starting.
+
+*Please not that "," (comma) must be replaced with "%2C" in order for the JSON to be passed through to the adaptor. If in doubt, it may be wise to pass the entire JSON document through `encodeURIComponent`.*
 
 # Developing
 
