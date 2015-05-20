@@ -35,6 +35,9 @@ func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
             return nil, errors.New(fmt.Sprintf("unknown option %s", k))
         }
     }
+	if route.Options["stream-prefix"] == "" {
+		return nil, errors.New("stream-prefix is a required option")
+	}
     var containerLogGroups map[string]string
     if val, ok := route.Options["container-log-groups"]; ok {
         if err := json.Unmarshal([]byte(val), &containerLogGroups); err != nil {
