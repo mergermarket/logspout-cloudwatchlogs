@@ -211,7 +211,7 @@ func (self *containerStream) handleMessages () {
         putResponse, putErr := self.adapter.cwl.PutLogEvents(&cloudwatchlogs.PutLogEventsInput{
             LogEvents: []*cloudwatchlogs.InputLogEvent{
                 &cloudwatchlogs.InputLogEvent{
-                    Message: aws.String(m.Data),
+                    Message: aws.String(fmt.Sprintf("%s\n", m.Data)),
                     Timestamp: aws.Long(m.Time.UnixNano() / (1000 * 1000)),
                 },
             },
@@ -222,7 +222,10 @@ func (self *containerStream) handleMessages () {
         if putErr != nil {
             // TODO do something more sophisticated than dropping message on the floor
             // TODO backoff on failure
-            log.Print("error putting log events: ", putErr)
+            log.Print(
+				"error putting log events to stream \"", self.streamName, "\" in log group \"", self.logGroupName, "\" ",
+				"for ", m.Container.Name[1:], ".", m.Source, ": ", putErr,
+			)
             continue
         }
         self.nextSequenceToken = putResponse.NextSequenceToken
