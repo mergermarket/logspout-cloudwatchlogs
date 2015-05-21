@@ -50,11 +50,11 @@ This adapter supports discovering the CloudWatchLogs Log Group from an environme
 
 This will cause the adapter to look for the following environment variable(s):
 
-* `LOGSPOUT_CLOUDWATCHLOGS` - logs sent to both STDOUT AND STDERR will be forwarded to the log group identified by the value of this environment variable.
-* `LOGSPOUT_CLOUDWATCHLOGS_STDOUT` - logs sent to STDOUT will be forwarded to the log group identified by the value fo this environment variable.
-* `LOGSPOUT_CLOUDWATCHLOGS_STDERR` - logs sent to STDERR will be forwarded to the log group identified by the value fo this environment variable.
+* `LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP` - logs sent to both STDOUT AND STDERR will be forwarded to the log group identified by the value of this environment variable.
+* `LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDOUT` - logs sent to STDOUT will be forwarded to the log group identified by the value fo this environment variable.
+* `LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDERR` - logs sent to STDERR will be forwarded to the log group identified by the value fo this environment variable.
 
-When enabled, it is a error for a container to specify both `LOGSPOUT_CLOUDWATCHLOGS` and either `LOGSPOUT_CLOUDWATCHLOGS_STDOUT` or `LOGSPOUT_CLOUDWATCHLOGS_STDERR`. Where this is the case, the error will be logged to the logging container's own STDERR and the container's logs will be ignored.
+When enabled, it is a error for a container to specify both `LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP` and either `LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDOUT` or `LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDERR`. Where this is the case, the error will be logged to the logging container's own STDERR and the container's logs will be ignored.
 
 #### `container-log-groups={"container-name1":{"both":"LogGroupName1"},"container-name2":{"stdout":"LogGroupName2-stdout","stderr":"LogGroupName2-stderr"}}`
 
@@ -63,6 +63,8 @@ JSON document that maps specific container names to log groups. For examle, if y
     'cloudwatchlogs://eu-west-1?container-log-groups={"ecs-agent":{"both":"ECSAgentLogGroup"}%2C"monitoring-agent":{"both":"MonitoringAgentLogGroup"}}'
 
 The STDOUT and STDERR stream from each container can be mapped to different log groups (by including "stdout" and/or "stderr"), or they can both be routed to the same log group (by including "both"). It is an error to include "both" and either "stdout" or "stderr". Doing so will prevent the logging container from starting.
+
+It is however legitimate to include neither "both" nor "stdout" or "stderr", or just "stdout" or "stderr", which will result in preventing logs from the absent streams being shipped. For example, settting `container-log-groups={"chatty-service":{}}` will result in no logs for the "chatty-service" to be shipped, and settting `container-log-groups={"hungry-bridget":{"stderr":"MyLogGroup"}}` will cause just STDERR to be shipped for the "hungry-bridget" service.
 
 *Please not that "," (comma) must be replaced with "%2C" in order for the JSON to be passed through to the adaptor. If in doubt, it may be wise to pass the entire JSON document through `encodeURIComponent`.*
 
@@ -88,6 +90,7 @@ The following are areas that need to be improved (i.e. a to do list):
 * Handle rate limiting - back off and retry.
 * Handle batching of messages, with configurable maximum wait time (default 5 seconds) and batch size (default 100).
 * Have a configurable per stream maximum buffer before messages are dropped on the floor, in order to allow bounds to be placed on memory size. Log messages being dropped.
-* Output aggregate statistics about log delivery to STDOUT.
+* Send aggregate statistics about log delivery as CloudWatch metrics directly (i.e. avoid relying on CloudWatchLogs for exposing metrics about our ability to send logs to CloudWatchLogs).
+* Output aggregate statistics about log delivery to STDOUT (i.e. to CloudWatchLogs). This should be useful in cases where the above alarms, but shouldn't be used as the trigger for alarms.
 
 

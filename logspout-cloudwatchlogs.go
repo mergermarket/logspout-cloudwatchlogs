@@ -21,9 +21,15 @@ type CloudWatchLogsAdapter struct {
     route *router.Route
     streamPrefix string
     defaultLogGroup string
-    logGroupEnvPrefix string
-    containerLogGroups map[string]string
+    logGroupFromEnv bool
+    containerLogGroups map[string]LogGroups
     containerStreams map[string]*containerStream
+}
+
+type LogGroups struct {
+	Both string
+	Stderr string
+	Stdout string
 }
 
 func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
@@ -31,25 +37,39 @@ func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
         Region: route.Address,
     })
     for k := range route.Options {
-        if k != "stream-prefix" && k != "default-log-group" && k != "log-group-env-prefix" && k != "container-log-groups" {
+        if k != "stream-prefix" && k != "default-log-group" && k != "log-group-from-env" && k != "container-log-groups" {
             return nil, errors.New(fmt.Sprintf("unknown option %s", k))
         }
     }
 	if route.Options["stream-prefix"] == "" {
 		return nil, errors.New("stream-prefix is a required option")
 	}
-    var containerLogGroups map[string]string
+	var logGroupFromEnv bool
+	logGroupFromEnvParameter, logGroupFromEnvSet := route.Options["log-group-from-env"]
+	if ! logGroupFromEnvSet || logGroupFromEnvParameter == "off" {
+		logGroupFromEnv = false
+	} else if logGroupFromEnvParameter == "on" {
+		logGroupFromEnv = true
+	} else {
+		return nil, errors.New("invalid value for log-group-from-env - must be \"on\" or \"off\" if present")
+	}
+    var containerLogGroups map[string]LogGroups
     if val, ok := route.Options["container-log-groups"]; ok {
         if err := json.Unmarshal([]byte(val), &containerLogGroups); err != nil {
             return nil, errors.New(fmt.Sprintf("error parsing container-log-groups %s", err))
         }
+		for name := range containerLogGroups {
+			if containerLogGroups[name].Both != "" && (containerLogGroups[name].Stdout != "" || containerLogGroups[name].Stderr != "") {
+				return nil, errors.New(fmt.Sprintf("container-log-groups.%s must container either \"both\" _or_ \"stdout\" and/or \"stderr\""))
+			}
+		}
     }
     return &CloudWatchLogsAdapter{
         cwl: cwl,
         route: route,
         streamPrefix: route.Options["stream-prefix"],
         defaultLogGroup: route.Options["default-log-group"],
-        logGroupEnvPrefix: route.Options["log-group-env-prefix"],
+        logGroupFromEnv: logGroupFromEnv,
         containerLogGroups: containerLogGroups,
         containerStreams: make(map[string]*containerStream),
     }, nil
@@ -58,14 +78,12 @@ func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
 func (self *CloudWatchLogsAdapter) Stream(logstream chan *router.Message) {
     for m := range logstream {
         name := strings.Join([]string{ self.streamPrefix, m.Container.Name[1:], m.Source }, "-")
-
-        var stream = self.containerStreams[name]
-
+		id := strings.Join([]string{ m.Container.ID, m.Source }, "-")
+        var stream = self.containerStreams[id]
         if stream == nil {
             stream = self.createContainerStream(name, m.Container, m.Source)
-            self.containerStreams[name] = stream
+            self.containerStreams[id] = stream
         }
-
         if stream.channel != nil {
             stream.channel <- m
         }
@@ -73,13 +91,14 @@ func (self *CloudWatchLogsAdapter) Stream(logstream chan *router.Message) {
 }
 
 func (self *CloudWatchLogsAdapter) createContainerStream (name string, container *docker.Container, source string) *containerStream {
-    logGroupName := self.getLogGroupName(container, source)
+    logGroupName, logGroupNameSource := self.getLogGroupName(container, source)
     var channel chan *router.Message
     if logGroupName != "" {
         channel = make(chan *router.Message)
     }
     stream := containerStream{
         logGroupName: logGroupName,
+		logGroupNameSource: logGroupNameSource,
         channel: channel,
         adapter: self,
         seenLogStream: false,
@@ -91,22 +110,38 @@ func (self *CloudWatchLogsAdapter) createContainerStream (name string, container
     return &stream
 }
 
-func (self *CloudWatchLogsAdapter) getLogGroupName (container *docker.Container, source string) string {
-    if logGroup, explicitLogGroup := self.containerLogGroups[container.Name[1:]]; explicitLogGroup {
-        return logGroup
-    } else if self.logGroupEnvPrefix != "" {
-        prefix := strings.Join([]string{ self.logGroupEnvPrefix, "_", strings.ToUpper(source), "=" }, "")
+const envPrefix = "LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP="
+const stdoutEnvPrefix = "LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDOUT="
+const stderrEnvPrefix = "LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDERR="
+
+func (self *CloudWatchLogsAdapter) getLogGroupName (container *docker.Container, source string) (string, string) {
+    if logGroups, explicitLogGroups := self.containerLogGroups[container.Name[1:]]; explicitLogGroups {
+		if logGroups.Both != "" {
+			return logGroups.Both, fmt.Sprintf("container-log-groups.%s.both parameter", container.Name[1:])
+		} else if source == "stdout" {
+			return logGroups.Stdout, fmt.Sprintf("container-log-groups.%s.stdout parameter", container.Name[1:])
+		} else if source == "stderr" {
+			return logGroups.Stderr, fmt.Sprintf("container-log-groups.%s.stderr parameter", container.Name[1:])
+		} else {
+			return "", ""
+		}
+    } else if self.logGroupFromEnv {
         for i := 0; i < len(container.Config.Env); i++ {
-            if strings.HasPrefix(container.Config.Env[i], prefix) {
-               return container.Config.Env[i][len(prefix):]
+			if source == "stdout" && strings.HasPrefix(container.Config.Env[i], stdoutEnvPrefix) {
+				return container.Config.Env[i][len(stdoutEnvPrefix):], fmt.Sprintf("%s.%s environment variable", container.Name[1:], stdoutEnvPrefix[:len(stdoutEnvPrefix)-1])
+			} else if source == "stderr" && strings.HasPrefix(container.Config.Env[i], stderrEnvPrefix) {
+				return container.Config.Env[i][len(stderrEnvPrefix):], fmt.Sprintf("%s.%s environment variable", container.Name[1:], stderrEnvPrefix[:len(stderrEnvPrefix)-1])
+			} else if strings.HasPrefix(container.Config.Env[i], envPrefix) {
+				return container.Config.Env[i][len(envPrefix):], fmt.Sprintf("%s.%s environment variable", container.Name[1:], envPrefix[:len(envPrefix)-1])
             }
         }
     }
-    return self.defaultLogGroup
+    return self.defaultLogGroup, "default-log-group parameter"
 }
 
 type containerStream struct {
     logGroupName string
+	logGroupNameSource string
     streamName string
     channel chan *router.Message
     adapter *CloudWatchLogsAdapter
@@ -123,7 +158,13 @@ func (self *containerStream) getNextSequenceToken (m *router.Message) (*string, 
         LogStreamNamePrefix: &self.streamName,
     })
     if descErr != nil {
-        return nil, descErr
+		return nil, errors.New(fmt.Sprintf(
+			"could not check for (describe) log stream \"%s\" for log group \"%s\" (from %s): %s",
+			self.streamName,
+			self.logGroupName,
+			self.logGroupNameSource,
+			descErr,
+		))
     }
     if len(logStreamsDescription.LogStreams) == 0 {
         _, createErr := self.adapter.cwl.CreateLogStream(&cloudwatchlogs.CreateLogStreamInput{
@@ -131,16 +172,24 @@ func (self *containerStream) getNextSequenceToken (m *router.Message) (*string, 
             LogStreamName: &self.streamName,
         })
         if createErr != nil {
-            return nil, createErr
+			return nil, errors.New(fmt.Sprintf(
+				"could not create log stream \"%s\" for log group \"%s\" (from %s): %s",
+				self.streamName,
+				self.logGroupName,
+				self.logGroupNameSource,
+				createErr,
+			))
         }
         self.seenLogStream = true
         return nil, nil
     } else {
         if *logStreamsDescription.LogStreams[0].LogStreamName != self.streamName {
-            return nil, errors.New(fmt.Sprintf("unexpected log stream %s matching %s (%d streams returned)",
+			return nil, errors.New(fmt.Sprintf("unexpected log stream \"%s\" matching \"%s\" (%d streams returned) in log group \"%s\" (from %s)",
                 *logStreamsDescription.LogStreams[0].LogStreamName,
                 self.streamName,
                 len(logStreamsDescription.LogStreams),
+				self.logGroupName,
+				self.logGroupNameSource,
             ))
         }
         self.seenLogStream = true
