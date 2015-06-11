@@ -145,7 +145,6 @@ func (self *CloudWatchLogsAdapter) sendMetrics() {
 		select {
 		case <-ticker.C:
 			if self.metricNamespace != "" {
-				log.Println("sending metrics")
 				self.putMetric("EventsDropped", self.eventsDropped)
 				self.putMetric("ThrottlingExceptions", self.throttlingExceptions)
 				self.putMetric("OtherErrors", self.otherErrors)
@@ -157,6 +156,7 @@ func (self *CloudWatchLogsAdapter) sendMetrics() {
 			)
 			self.eventsDropped = 0
 			self.throttlingExceptions = 0
+			self.otherErrors = 0
 		}
 	}
 }
