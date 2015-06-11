@@ -68,6 +68,14 @@ It is however legitimate to include neither "both" nor "stdout" or "stderr", or 
 
 *Please not that "," (comma) must be replaced with "%2C" in order for the JSON to be passed through to the adaptor. If in doubt, it may be wise to pass the entire JSON document through `encodeURIComponent`.*
 
+#### `metric-namespace` (optional)
+
+If set then CloudWatch metrics for `ThrottlingExceptions`, `OtherErrors` and `EventsDropped` will be set once a minute.
+
+#### `metric-dimensions` (optional)
+
+JSON dictionary containing dimensions (i.e. string keys and values) that will be used for the CloudWatch metrics. As with the `container-log-groups`, make sure you properly URL escape the value (particularly replacing commas with "%2C").
+
 # Developing
 
 I haven't found a particularly good way to test logspout adapters during development. In order to shorten the cycle time of making a change and testing it, you can do the following:
@@ -87,10 +95,5 @@ Since the first two steps take quite a while, this allows you to make code chang
 
 The following are areas that need to be improved (i.e. a to do list):
 
-* Handle rate limiting - back off and retry.
-* Handle batching of messages, with configurable maximum wait time (default 5 seconds) and batch size (default 100).
-* Have a configurable per stream maximum buffer before messages are dropped on the floor, in order to allow bounds to be placed on memory size. Log messages being dropped.
-* Send aggregate statistics about log delivery as CloudWatch metrics directly (i.e. avoid relying on CloudWatchLogs for exposing metrics about our ability to send logs to CloudWatchLogs).
-* Output aggregate statistics about log delivery to STDOUT (i.e. to CloudWatchLogs). This should be useful in cases where the above alarms, but shouldn't be used as the trigger for alarms.
-
+* Measure log batch size and send largest batches possible.
 
