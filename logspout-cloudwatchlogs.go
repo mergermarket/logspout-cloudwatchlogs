@@ -20,7 +20,7 @@ const stdoutEnvPrefix = "LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDOUT="
 const stderrEnvPrefix = "LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDERR="
 const bufferMessagesPerContainerStream = 1024
 const maxBatchWaitMilliseconds = 3 * 1000
-const maxBackoffIntervalMilliseconds = 256 * 1000
+const maxBackoffInterval time.Duration = time.Minute * 3
 
 func init() {
 	router.AdapterFactories.Register(NewCloudWatchLogsAdapter, "cloudwatchlogs")
@@ -37,6 +37,7 @@ type CloudWatchLogsAdapter struct {
 	logGroupFromEnv      bool
 	containerLogGroups   map[string]LogGroups
 	containerStreams     map[string]*containerStream
+	eventsSent           float64
 	eventsDropped        float64
 	throttlingExceptions float64
 	otherErrors          float64
@@ -114,6 +115,7 @@ func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
 		metricDimensions:     &metricDimensions,
 		logGroupFromEnv:      logGroupFromEnv,
 		containerLogGroups:   containerLogGroups,
+		eventsSent:           0,
 		eventsDropped:        0,
 		throttlingExceptions: 0,
 		otherErrors:          0,
@@ -145,15 +147,18 @@ func (self *CloudWatchLogsAdapter) sendMetrics() {
 		select {
 		case <-ticker.C:
 			if self.metricNamespace != "" {
+				self.putMetric("EventsSent", self.eventsSent)
 				self.putMetric("EventsDropped", self.eventsDropped)
 				self.putMetric("ThrottlingExceptions", self.throttlingExceptions)
 				self.putMetric("OtherErrors", self.otherErrors)
 			}
-			log.Printf("dropped events: %.0f, throttlingExceptions: %.0f, otherErrors: %.0f",
+			log.Printf("sent events: %.0f, dropped events: %.0f, throttlingExceptions: %.0f, otherErrors: %.0f",
+				self.eventsSent,
 				self.eventsDropped,
 				self.throttlingExceptions,
 				self.otherErrors,
 			)
+			self.eventsSent = 0
 			self.eventsDropped = 0
 			self.throttlingExceptions = 0
 			self.otherErrors = 0
@@ -277,15 +282,15 @@ func (self *containerStream) getLogStream() (*string, error) {
 }
 
 func (self *containerStream) initLogStream(done chan *string) {
-	var interval time.Duration = 1000 / 8
+	var interval time.Duration = time.Millisecond * 100
 	for {
 		sequenceToken, err := self.getLogStream()
 		if err != nil {
-			log.Print(fmt.Sprintf("error getting log stream (backing off for %f second(s)): %s", interval/1000, err))
-			time.Sleep(interval * time.Millisecond)
+			log.Print(fmt.Sprintf("error getting log stream (backing off for %.0fms): %s", interval.Seconds()*1000, err))
+			time.Sleep(interval)
 			interval *= 2
-			if interval > maxBackoffIntervalMilliseconds {
-				interval = maxBackoffIntervalMilliseconds
+			if interval > maxBackoffInterval {
+				interval = maxBackoffInterval
 			}
 		} else {
 			done <- sequenceToken
@@ -352,8 +357,8 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 		if messages == 0 {
 			continue
 		}
-		// start backoff at 1/8 second
-		var interval time.Duration = 1000 / 8
+		// start backoff at 100ms
+		var interval time.Duration = time.Millisecond * 100
 	SEND:
 		for {
 			putResponse, putErr := self.adapter.cwl.PutLogEvents(&cloudwatchlogs.PutLogEventsInput{
@@ -363,6 +368,7 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 				SequenceToken: nextSequenceToken,
 			})
 			if putErr == nil {
+				self.adapter.eventsSent += float64(messages)
 				nextSequenceToken = putResponse.NextSequenceToken
 				messages = 0
 				break
@@ -372,18 +378,22 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 				} else {
 					self.adapter.otherErrors++
 				}
-				log.Printf(
-					"error putting %d log events to stream \"%s\" in log group \"%s\" (backing off for %d): %s",
-					messages,
-					self.name,
-					self.logGroupName,
-					interval,
-					putErr,
-				)
-				timeout := time.After(time.Millisecond * interval)
+				// disable as could lead to a feedback look. Need to work out mechanism for making these logs available for debugging
+				// purposes, without the possibility of feedback
+				if false {
+					log.Printf(
+						"error putting %d log events to stream \"%s\" in log group \"%s\" (backing off for %.0fms): %s",
+						messages,
+						self.name,
+						self.logGroupName,
+						interval.Seconds()*1000,
+						putErr,
+					)
+				}
+				timeout := time.After(interval)
 				interval *= 2
-				if interval > maxBackoffIntervalMilliseconds {
-					interval = maxBackoffIntervalMilliseconds
+				if interval > maxBackoffInterval {
+					interval = maxBackoffInterval
 				}
 				for {
 					if messages < maxBatchSize {
