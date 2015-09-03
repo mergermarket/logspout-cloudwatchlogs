@@ -105,7 +105,8 @@ func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
 	} else {
 		metricDimensions = []*cloudwatch.Dimension{}
 	}
-	return &CloudWatchLogsAdapter{
+
+	self := &CloudWatchLogsAdapter{
 		cwl:                  cwl,
 		cw:                   cw,
 		route:                route,
@@ -120,7 +121,26 @@ func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
 		throttlingExceptions: 0,
 		otherErrors:          0,
 		containerStreams:     make(map[string]*containerStream),
-	}, nil
+	}
+	go self.cleanupStreams()
+	return self, nil
+}
+
+func (self *CloudWatchLogsAdapter) cleanupStreams() {
+	ticker := time.NewTicker(time.Minute)
+	for {
+		select {
+		case <-ticker.C:
+			removeBefore := time.Now().Add(-5 * time.Minute)
+			for name, stream := range self.containerStreams {
+				if stream.messages == 0 && stream.lastMessageAt.Before(removeBefore) {
+					close(self.containerStreams[name].channel)
+					close(self.containerStreams[name].streamInitChannel)
+					delete(self.containerStreams, name)
+				}
+			}
+		}
+	}
 }
 
 func (self *CloudWatchLogsAdapter) putMetric(name string, value float64) {
@@ -205,6 +225,7 @@ func (self *CloudWatchLogsAdapter) createContainerStream(name string, firstMessa
 		streamInitChannel:  streamInitChannel,
 		adapter:            self,
 		name:               name,
+		lastMessageAt:      time.Now(),
 	}
 	if stream.channel != nil {
 		go stream.initLogStream(streamInitChannel)
@@ -245,6 +266,8 @@ type containerStream struct {
 	channel            chan *cloudwatchlogs.InputLogEvent
 	streamInitChannel  chan *string
 	adapter            *CloudWatchLogsAdapter
+	lastMessageAt      time.Time
+	messages           int
 }
 
 func (self *containerStream) getLogStream() (*string, error) {
@@ -309,17 +332,22 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 
 	var streamInitialised bool = false
 	var nextSequenceToken *string
-	var messages int = 0
+	self.messages = 0
+	var ok bool
 
 	for {
 		timeout := time.After(time.Millisecond * maxBatchWaitMilliseconds)
 		var timeoutPassed = false
 	COLLECT:
 		for {
-			if messages < maxBatchSize {
+			if self.messages < maxBatchSize {
 				// must only run this select if we have capacity to receive the message
 				select {
-				case nextSequenceToken = <-self.streamInitChannel:
+				case nextSequenceToken, ok = <-self.streamInitChannel:
+					if !ok {
+						// channel closed, no more work
+						return
+					}
 					// this is half of logic to send as soon as stream is initialised and timeout passes (see other half below)
 					streamInitialised = true
 					if timeoutPassed {
@@ -327,9 +355,14 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 					} else {
 						continue COLLECT
 					}
-				case m := <-self.channel:
-					batch[messages] = m
-					messages++
+				case m, ok := <-self.channel:
+					if !ok {
+						// channel closed, no more work
+						return
+					}
+					batch[self.messages] = m
+					self.messages++
+					self.lastMessageAt = time.Now()
 				case <-timeout:
 					// this is the other half of the logic to send as soon as stream is initialised and timeout passes
 					timeoutPassed = true
@@ -346,7 +379,11 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 				} else {
 					// all we can do here is wait for the stream to be initialised for as long as it takes
 					select {
-					case nextSequenceToken = <-self.streamInitChannel:
+					case nextSequenceToken, ok = <-self.streamInitChannel:
+						if !ok {
+							// channel closed, no more work
+							return
+						}
 						streamInitialised = true
 						// and then send it
 						break COLLECT
@@ -354,7 +391,7 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 				}
 			}
 		}
-		if messages == 0 {
+		if self.messages == 0 {
 			continue
 		}
 		// start backoff at 100ms
@@ -362,18 +399,18 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 	SEND:
 		for {
 			putResponse, putErr := self.adapter.cwl.PutLogEvents(&cloudwatchlogs.PutLogEventsInput{
-				LogEvents:     batch[:messages],
+				LogEvents:     batch[:self.messages],
 				LogGroupName:  &self.logGroupName,
 				LogStreamName: &self.name,
 				SequenceToken: nextSequenceToken,
 			})
 			if putErr == nil {
-				self.adapter.eventsSent += float64(messages)
+				self.adapter.eventsSent += float64(self.messages)
 				nextSequenceToken = putResponse.NextSequenceToken
-				for i := 0; i < messages; i++ {
+				for i := 0; i < self.messages; i++ {
 					batch[i] = nil
 				}
-				messages = 0
+				self.messages = 0
 				break
 			} else {
 				if awsErr, ok := putErr.(awserr.Error); ok && awsErr.Code() == "ThrottlingException" {
@@ -386,7 +423,7 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 				if false {
 					log.Printf(
 						"error putting %d log events to stream \"%s\" in log group \"%s\" (backing off for %.0fms): %s",
-						messages,
+						self.messages,
 						self.name,
 						self.logGroupName,
 						interval.Seconds()*1000,
@@ -399,12 +436,16 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 					interval = maxBackoffInterval
 				}
 				for {
-					if messages < maxBatchSize {
+					if self.messages < maxBatchSize {
 						// must only run this select if we have capacity to receive the message
 						select {
-						case m := <-self.channel:
-							batch[messages] = m
-							messages++
+						case m, ok := <-self.channel:
+							if !ok {
+								// channel closed, no more work
+								return
+							}
+							batch[self.messages] = m
+							self.messages++
 						case <-timeout:
 							continue SEND
 						}
