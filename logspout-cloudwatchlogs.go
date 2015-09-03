@@ -51,12 +51,12 @@ type LogGroups struct {
 
 func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
 	cwl := cloudwatchlogs.New(&aws.Config{
-		Region: route.Address,
+		Region: &route.Address,
 	})
 	var cw *cloudwatch.CloudWatch
 	if route.Options["metric-namespace"] != "" {
 		cw = cloudwatch.New(&aws.Config{
-			Region: route.Address,
+			Region: &route.Address,
 		})
 	}
 	for k := range route.Options {
@@ -179,7 +179,7 @@ func (self *CloudWatchLogsAdapter) Stream(logstream chan *router.Message) {
 		if stream.channel != nil {
 			event := &cloudwatchlogs.InputLogEvent{
 				Message:   aws.String(fmt.Sprintf("%s\n", m.Data)),
-				Timestamp: aws.Long(m.Time.UnixNano() / (1000 * 1000)),
+				Timestamp: aws.Int64(m.Time.UnixNano() / (1000 * 1000)),
 			}
 			select {
 			case stream.channel <- event:
@@ -370,6 +370,9 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 			if putErr == nil {
 				self.adapter.eventsSent += float64(messages)
 				nextSequenceToken = putResponse.NextSequenceToken
+				for i := 0; i < messages; i++ {
+					batch[i] = nil
+				}
 				messages = 0
 				break
 			} else {
