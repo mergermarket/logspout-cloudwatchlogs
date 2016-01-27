@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
+	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/cloudwatch"
 	"github.com/aws/aws-sdk-go/service/cloudwatchlogs"
 	"github.com/fsouza/go-dockerclient"
@@ -50,12 +51,13 @@ type LogGroups struct {
 }
 
 func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
-	cwl := cloudwatchlogs.New(&aws.Config{
+	ses := session.New()
+	cwl := cloudwatchlogs.New(ses, &aws.Config{
 		Region: &route.Address,
 	})
 	var cw *cloudwatch.CloudWatch
 	if route.Options["metric-namespace"] != "" {
-		cw = cloudwatch.New(&aws.Config{
+		cw = cloudwatch.New(ses, &aws.Config{
 			Region: &route.Address,
 		})
 	}
@@ -417,6 +419,14 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 					self.adapter.throttlingExceptions++
 				} else {
 					self.adapter.otherErrors++
+
+					log.Printf(
+						"error putting %d log events to stream \"%s\" in log group \"%s\": %s",
+						self.messages,
+						self.name,
+						self.logGroupName,
+						putErr,
+					)
 				}
 				// disable as could lead to a feedback look. Need to work out mechanism for making these logs available for debugging
 				// purposes, without the possibility of feedback
