@@ -28,20 +28,23 @@ func init() {
 }
 
 type CloudWatchLogsAdapter struct {
-	cwl                  *cloudwatchlogs.CloudWatchLogs
-	cw                   *cloudwatch.CloudWatch
-	metricNamespace      string
-	metricDimensions     *[]*cloudwatch.Dimension
-	route                *router.Route
-	streamPrefix         string
-	defaultLogGroup      string
-	logGroupFromEnv      bool
-	containerLogGroups   map[string]LogGroups
-	containerStreams     map[string]*containerStream
-	eventsSent           float64
-	eventsDropped        float64
-	throttlingExceptions float64
-	otherErrors          float64
+	cwl                      *cloudwatchlogs.CloudWatchLogs
+	cw                       *cloudwatch.CloudWatch
+	metricNamespace          string
+	metricDimensions         *[]*cloudwatch.Dimension
+	route                    *router.Route
+	streamPrefix             string
+	defaultLogGroup          string
+	logGroupFromEnv          bool
+	containerLogGroups       map[string]LogGroups
+	containerStreams         map[string]*containerStream
+	eventsSent               float64
+	eventsDropped            float64
+	tooLargeEventsDropped    float64
+	batchesDropped           float64
+	messagesInDroppedBatches float64
+	throttlingExceptions     float64
+	otherErrors              float64
 }
 
 type LogGroups struct {
@@ -109,20 +112,23 @@ func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
 	}
 
 	self := &CloudWatchLogsAdapter{
-		cwl:                  cwl,
-		cw:                   cw,
-		route:                route,
-		streamPrefix:         route.Options["stream-prefix"],
-		defaultLogGroup:      route.Options["default-log-group"],
-		metricNamespace:      route.Options["metric-namespace"],
-		metricDimensions:     &metricDimensions,
-		logGroupFromEnv:      logGroupFromEnv,
-		containerLogGroups:   containerLogGroups,
-		eventsSent:           0,
-		eventsDropped:        0,
-		throttlingExceptions: 0,
-		otherErrors:          0,
-		containerStreams:     make(map[string]*containerStream),
+		cwl:                      cwl,
+		cw:                       cw,
+		route:                    route,
+		streamPrefix:             route.Options["stream-prefix"],
+		defaultLogGroup:          route.Options["default-log-group"],
+		metricNamespace:          route.Options["metric-namespace"],
+		metricDimensions:         &metricDimensions,
+		logGroupFromEnv:          logGroupFromEnv,
+		containerLogGroups:       containerLogGroups,
+		eventsSent:               0,
+		eventsDropped:            0,
+		tooLargeEventsDropped:    0,
+		batchesDropped:           0,
+		messagesInDroppedBatches: 0,
+		throttlingExceptions:     0,
+		otherErrors:              0,
+		containerStreams:         make(map[string]*containerStream),
 	}
 	go self.cleanupStreams()
 	return self, nil
@@ -171,17 +177,26 @@ func (self *CloudWatchLogsAdapter) sendMetrics() {
 			if self.metricNamespace != "" {
 				self.putMetric("EventsSent", self.eventsSent)
 				self.putMetric("EventsDropped", self.eventsDropped)
+				self.putMetric("TooLargeEventsDropped", self.tooLargeEventsDropped)
+				self.putMetric("BatchesDropped", self.batchesDropped)
+				self.putMetric("MessagesInDroppedBatches", self.messagesInDroppedBatches)
 				self.putMetric("ThrottlingExceptions", self.throttlingExceptions)
 				self.putMetric("OtherErrors", self.otherErrors)
 			}
-			log.Printf("sent events: %.0f, dropped events: %.0f, throttlingExceptions: %.0f, otherErrors: %.0f",
+			log.Printf("sent events: %.0f, dropped events: %.0f, too large events dropped: %.0f, batches dropped: %.0f, messages in dropped batches: %.0f, throttlingExceptions: %.0f, otherErrors: %.0f",
 				self.eventsSent,
 				self.eventsDropped,
+				self.tooLargeEventsDropped,
+				self.batchesDropped,
+				self.messagesInDroppedBatches,
 				self.throttlingExceptions,
 				self.otherErrors,
 			)
 			self.eventsSent = 0
 			self.eventsDropped = 0
+			self.tooLargeEventsDropped = 0
+			self.batchesDropped = 0
+			self.messagesInDroppedBatches = 0
 			self.throttlingExceptions = 0
 			self.otherErrors = 0
 		}
@@ -195,7 +210,7 @@ func (self *CloudWatchLogsAdapter) Stream(logstream chan *router.Message) {
 		id := strings.Join([]string{m.Container.ID, m.Source}, "-")
 		var stream = self.containerStreams[id]
 		if stream == nil {
-			stream = self.createContainerStream(name, m)
+			stream = self.createContainerStream(name, m.Container, m.Source)
 			self.containerStreams[id] = stream
 		}
 		if stream.channel != nil {
@@ -212,8 +227,8 @@ func (self *CloudWatchLogsAdapter) Stream(logstream chan *router.Message) {
 	}
 }
 
-func (self *CloudWatchLogsAdapter) createContainerStream(name string, firstMessage *router.Message) *containerStream {
-	logGroupName, logGroupNameSource := self.getLogGroupName(firstMessage.Container, firstMessage.Source)
+func (self *CloudWatchLogsAdapter) createContainerStream(name string, container *docker.Container, source string) *containerStream {
+	logGroupName, logGroupNameSource := self.getLogGroupName(container, source)
 	var channel chan *cloudwatchlogs.InputLogEvent
 	var streamInitChannel chan *string
 	if logGroupName != "" {
@@ -231,7 +246,7 @@ func (self *CloudWatchLogsAdapter) createContainerStream(name string, firstMessa
 	}
 	if stream.channel != nil {
 		go stream.initLogStream(streamInitChannel)
-		go stream.handleMessages(firstMessage)
+		go stream.handleEvents()
 	}
 	return &stream
 }
@@ -270,6 +285,7 @@ type containerStream struct {
 	adapter            *CloudWatchLogsAdapter
 	lastMessageAt      time.Time
 	messages           int
+	batchSize          int
 }
 
 func (self *containerStream) getLogStream() (*string, error) {
@@ -329,15 +345,24 @@ func (self *containerStream) initLogStream(done chan *string) {
 // TODO: track batch size in bytes and use maximum possible limits (batches will fail if messages are on average greater than 1,048,576 / 512 - 26 = 2,022)
 const maxBatchSize = 512
 
-func (self *containerStream) handleMessages(firstMessage *router.Message) {
+func (self *containerStream) handleEvents() {
 	var batch [maxBatchSize]*cloudwatchlogs.InputLogEvent
 
 	var streamInitialised bool = false
 	var nextSequenceToken *string
+	var overflowEvent *cloudwatchlogs.InputLogEvent = nil
 	self.messages = 0
+	self.batchSize = 0
+
 	var ok bool
 
 	for {
+		if overflowEvent != nil {
+			self.messages = 1
+			self.batchSize = 26 + len(*overflowEvent.Message)
+			batch[0] = overflowEvent
+			overflowEvent = nil
+		}
 		timeout := time.After(time.Millisecond * maxBatchWaitMilliseconds)
 		var timeoutPassed = false
 	COLLECT:
@@ -357,12 +382,27 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 					} else {
 						continue COLLECT
 					}
-				case m, ok := <-self.channel:
+				case event, ok := <-self.channel:
 					if !ok {
 						// channel closed, no more work
 						return
 					}
-					batch[self.messages] = m
+					messageSize := 26 + len(*event.Message)
+					if messageSize > 256*1024 {
+						self.adapter.tooLargeEventsDropped++
+						log.Printf(
+							"error sending message to log stream - maximum length is %d bytes, message was %d bytes",
+							256*1024-26,
+							messageSize-26,
+						)
+						// TODO increment metric for discarded messages
+						continue COLLECT
+					}
+					if self.batchSize+messageSize > 1024*1024 {
+						overflowEvent = event
+						break COLLECT
+					}
+					batch[self.messages] = event
 					self.messages++
 					self.lastMessageAt = time.Now()
 				case <-timeout:
@@ -398,8 +438,10 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 		}
 		// start backoff at 100ms
 		var interval time.Duration = time.Millisecond * 100
+		var attempts int = 0
 	SEND:
 		for {
+			attempts++
 			putResponse, putErr := self.adapter.cwl.PutLogEvents(&cloudwatchlogs.PutLogEventsInput{
 				LogEvents:     batch[:self.messages],
 				LogGroupName:  &self.logGroupName,
@@ -413,39 +455,39 @@ func (self *containerStream) handleMessages(firstMessage *router.Message) {
 					batch[i] = nil
 				}
 				self.messages = 0
+				self.batchSize = 0
 				break
 			} else {
 				if awsErr, ok := putErr.(awserr.Error); ok && awsErr.Code() == "ThrottlingException" {
 					self.adapter.throttlingExceptions++
 				} else {
 					self.adapter.otherErrors++
-
-					log.Printf(
-						"error putting %d log events to stream \"%s\" in log group \"%s\": %s",
-						self.messages,
-						self.name,
-						self.logGroupName,
-						putErr,
-					)
 				}
-				// disable as could lead to a feedback look. Need to work out mechanism for making these logs available for debugging
-				// purposes, without the possibility of feedback
-				if false {
-					log.Printf(
-						"error putting %d log events to stream \"%s\" in log group \"%s\" (backing off for %.0fms): %s",
-						self.messages,
-						self.name,
-						self.logGroupName,
-						interval.Seconds()*1000,
-						putErr,
-					)
-				}
+				log.Printf(
+					"error putting %d log events to stream \"%s\" in log group \"%s\" (backing off for %.0fms): %s",
+					self.messages,
+					self.name,
+					self.logGroupName,
+					interval.Seconds()*1000,
+					putErr,
+				)
 				timeout := time.After(interval)
 				interval *= 2
 				if interval > maxBackoffInterval {
 					interval = maxBackoffInterval
 				}
 				for {
+					if attempts > 10 {
+						self.adapter.batchesDropped++
+						self.adapter.messagesInDroppedBatches += float64(self.messages)
+						log.Printf("error sending batch after 10 attempts, giving up")
+						for i := 0; i < self.messages; i++ {
+							batch[i] = nil
+						}
+						self.messages = 0
+						self.batchSize = 0
+						break SEND
+					}
 					if self.messages < maxBatchSize {
 						// must only run this select if we have capacity to receive the message
 						select {
