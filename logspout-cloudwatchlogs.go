@@ -22,6 +22,10 @@ const stderrEnvPrefix = "LOGSPOUT_CLOUDWATCHLOGS_LOG_GROUP_STDERR="
 const bufferMessagesPerContainerStream = 1024
 const maxBatchWaitMilliseconds = 3 * 1000
 const maxBackoffInterval time.Duration = time.Minute * 3
+const maxBatchAttempts = 10
+
+// needs to be less than 256k - 26 bytes (also length of truncation message). 10k seems reasonable
+const maxLineLength = 10 * 1024
 
 func init() {
 	router.AdapterFactories.Register(NewCloudWatchLogsAdapter, "cloudwatchlogs")
@@ -40,6 +44,7 @@ type CloudWatchLogsAdapter struct {
 	containerStreams         map[string]*containerStream
 	eventsSent               float64
 	eventsDropped            float64
+	tooLargeEventsTruncated  float64
 	tooLargeEventsDropped    float64
 	batchesDropped           float64
 	messagesInDroppedBatches float64
@@ -123,6 +128,7 @@ func NewCloudWatchLogsAdapter(route *router.Route) (router.LogAdapter, error) {
 		containerLogGroups:       containerLogGroups,
 		eventsSent:               0,
 		eventsDropped:            0,
+		tooLargeEventsTruncated:  0,
 		tooLargeEventsDropped:    0,
 		batchesDropped:           0,
 		messagesInDroppedBatches: 0,
@@ -177,15 +183,17 @@ func (self *CloudWatchLogsAdapter) sendMetrics() {
 			if self.metricNamespace != "" {
 				self.putMetric("EventsSent", self.eventsSent)
 				self.putMetric("EventsDropped", self.eventsDropped)
+				self.putMetric("TooLargeEventsTruncated", self.tooLargeEventsTruncated)
 				self.putMetric("TooLargeEventsDropped", self.tooLargeEventsDropped)
 				self.putMetric("BatchesDropped", self.batchesDropped)
 				self.putMetric("MessagesInDroppedBatches", self.messagesInDroppedBatches)
 				self.putMetric("ThrottlingExceptions", self.throttlingExceptions)
 				self.putMetric("OtherErrors", self.otherErrors)
 			}
-			log.Printf("sent events: %.0f, dropped events: %.0f, too large events dropped: %.0f, batches dropped: %.0f, messages in dropped batches: %.0f, throttlingExceptions: %.0f, otherErrors: %.0f",
+			log.Printf("sent events: %.0f, dropped events: %.0f, too large events truncated: %.0f, too large events dropped: %.0f, batches dropped: %.0f, messages in dropped batches: %.0f, throttlingExceptions: %.0f, otherErrors: %.0f",
 				self.eventsSent,
 				self.eventsDropped,
+				self.tooLargeEventsTruncated,
 				self.tooLargeEventsDropped,
 				self.batchesDropped,
 				self.messagesInDroppedBatches,
@@ -194,6 +202,7 @@ func (self *CloudWatchLogsAdapter) sendMetrics() {
 			)
 			self.eventsSent = 0
 			self.eventsDropped = 0
+			self.tooLargeEventsTruncated = 0
 			self.tooLargeEventsDropped = 0
 			self.batchesDropped = 0
 			self.messagesInDroppedBatches = 0
@@ -214,8 +223,15 @@ func (self *CloudWatchLogsAdapter) Stream(logstream chan *router.Message) {
 			self.containerStreams[id] = stream
 		}
 		if stream.channel != nil {
+			var message *string
+			if len(m.Data) > maxLineLength {
+				self.tooLargeEventsTruncated++
+				message = aws.String(fmt.Sprintf("[truncated log line - length %d, max: %d] %s...\n", len(m.Data), maxLineLength, m.Data[0:maxLineLength]))
+			} else {
+				message = aws.String(fmt.Sprintf("%s\n", m.Data))
+			}
 			event := &cloudwatchlogs.InputLogEvent{
-				Message:   aws.String(fmt.Sprintf("%s\n", m.Data)),
+				Message:   message,
 				Timestamp: aws.Int64(m.Time.UnixNano() / (1000 * 1000)),
 			}
 			select {
@@ -389,6 +405,8 @@ func (self *containerStream) handleEvents() {
 					}
 					messageSize := 26 + len(*event.Message)
 					if messageSize > 256*1024 {
+						// this should never happen since we truncate message above. Leaving edge case handling in case somebody modifies
+						// maxLineLength beyond where it should go
 						self.adapter.tooLargeEventsDropped++
 						log.Printf(
 							"error sending message to log stream - maximum length is %d bytes, message was %d bytes",
@@ -477,7 +495,7 @@ func (self *containerStream) handleEvents() {
 					interval = maxBackoffInterval
 				}
 				for {
-					if attempts > 10 {
+					if attempts > maxBatchAttempts {
 						self.adapter.batchesDropped++
 						self.adapter.messagesInDroppedBatches += float64(self.messages)
 						log.Printf("error sending batch after 10 attempts, giving up")
